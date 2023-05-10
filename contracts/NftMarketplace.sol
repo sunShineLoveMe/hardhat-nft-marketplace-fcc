@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: SEE LICENSE IN LICENSE
+
+pragma solidity ^0.8.7;
+
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+
+error NftMarketplace__PriceMustBeAboveZero();
+error NftMarketplace__NotApprovedForMarketplace();
+error NftMarketplace__AlreadyListed(address nftAddress, uint256 tokenId);
+error NftMarketplace__NotOwner();
+error NftMarketplace__NotListed(address nftAddress, uint256 tokenId);
+error NftMarketplace__PriceNotMet(address nftAddress, uint256 tokenId, uint256 price);
+
+contract NftMarketplace {
+    // events
+    struct Listing {
+        uint256 price;
+        address seller;
+    }
+
+     event ItemListed(
+        address indexed seller,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        uint256 price
+    );
+
+    event ItemBought(
+        address indexed buyer,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        uint256 price
+    );
+
+    // nft address -> nft tokenid -> Listing
+    mapping(address => mapping (uint256 => Listing)) private s_listings;
+    // Seller address -> Amount earned
+    mapping(address => uint256) private s_proceeds; 
+
+    // modifiers
+    modifier notListed(address nftAddress, uint256 tokenId, address owner) {
+        Listing memory listing = s_listings[nftAddress][tokenId];
+        if(listing.price > 0) {
+            revert NftMarketplace__AlreadyListed(nftAddress, tokenId);
+        }
+        _;
+    }
+
+    modifier isOwner(address nftAddress, uint256 tokenId, address spender) {
+        IERC721 nft = IERC721(nftAddress);
+        if(nft.ownerOf(tokenId) != spender) {
+            revert NftMarketplace__NotOwner();
+        }
+        _;
+    }
+
+    modifier isListed(address nftAddress, uint256 tokenid) {
+        Listing memory listing = s_listings[nftAddress][tokenid];
+        if(listing.price <= 0) {
+            revert NftMarketplace__NotListed(nftAddress, tokenid);
+        }
+        _;
+    }
+
+    // functions
+    function listItem(
+            address nftAddress, 
+            uint256 tokenId, 
+            uint256 price
+            // address tokenPayment // chainlink price feeds
+        ) external
+          notListed(nftAddress, tokenId, msg.sender) 
+          isOwner(nftAddress, tokenId, msg.sender)
+        { 
+            if(price <=0) {
+                revert NftMarketplace__PriceMustBeAboveZero();
+            }
+            IERC721 nft = IERC721(nftAddress);
+            if(nft.getApproved(tokenId) != address(this)) {
+                revert NftMarketplace__NotApprovedForMarketplace();
+            }
+            s_listings[nftAddress][tokenId] = Listing(price, msg.sender);
+            emit ItemListed(msg.sender, nftAddress, tokenId, price);
+    }
+
+    function buyItem(address nftAddress, uint256 tokenId) 
+        external 
+        payable 
+        isListed(nftAddress, tokenId) 
+    {
+        Listing memory listingItem = s_listings[nftAddress][tokenId];
+        if(msg.value < listingItem.price) {
+            revert NftMarketplace__PriceNotMet(nftAddress, tokenId, listingItem.price);
+        }
+        /*
+         *  有一点需要注意： 不要直接使用transfer，因为这样会导致交易失败，
+            因为transfer只能转移2300gas，而这个函数需要更多的gas 
+         */
+        s_proceeds[listingItem.seller] = s_proceeds[listingItem.seller] + msg.value;
+        delete (s_listings[nftAddress][tokenId]);
+        IERC721(nftAddress).safeTransferFrom(listingItem.seller, msg.sender, tokenId);
+        emit ItemBought(msg.sender, nftAddress, tokenId, listingItem.price);
+    } 
+}
